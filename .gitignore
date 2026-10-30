@@ -1,0 +1,10 @@
+data/
+tools/정답지.md
+__pycache__/
+*.pyc
+.env
+.vercel/
+.DS_Store
+.claude/settings.local.json
+.env.local
+시안.png
