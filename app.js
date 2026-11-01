@@ -77,8 +77,18 @@ function show(name) {
 
 /* ── 시작 ────────────────────────────────────────── */
 async function boot() {
-  INDEX = await (await fetch("topics.json")).json();
-  $("title").textContent = INDEX.title;
+  INDEX = await (await fetch("topics.json", { cache: "no-store" })).json();
+  // 제목은 첫 단어는 빨강, 나머지는 파랑 두 줄로 나눈다 (태극 두 색)
+  const [head, ...rest] = INDEX.title.split(" ");
+  $("title").innerHTML = "";
+  const red = document.createElement("span");
+  red.className = "t-red"; red.textContent = head;
+  $("title").appendChild(red);
+  if (rest.length) {
+    const blue = document.createElement("span");
+    blue.className = "t-blue"; blue.textContent = rest.join(" ");
+    $("title").append(document.createElement("br"), blue);
+  }
   $("subtitle").textContent = INDEX.subtitle;
 
   const p = new URLSearchParams(location.search);
@@ -112,7 +122,9 @@ function renderGrid() {
     const b = document.createElement("button");
     b.className = "tcard" + (t.id in done ? " done" : "");
     b.innerHTML =
-      `<span class="temoji">${t.emoji}</span>` +
+      (t.art
+        ? `<span class="tart" aria-hidden="true">${t.art.map((src) => `<img src="${src}" alt="">`).join("")}</span>`
+        : `<span class="temoji${t.fx ? ` fx-${t.fx}` : ""}">${t.emoji}</span>`) +
       `<span class="ttitle">${t.title}</span>` +
       `<span class="tblurb">${t.blurb}</span>` +
       (t.id in done ? `<span class="tscore">${done[t.id]}점</span>` : "");
@@ -122,7 +134,9 @@ function renderGrid() {
 }
 
 async function start(id) {
-  PACK = await (await fetch(`topics/${id}.json`)).json();
+  // 주제를 누른 뒤에 받는 파일은 강력 새로고침으로도 새로 받지 않는다. 문항을 다시
+  // 계산해도 옛 파일이 나오지 않게, 기억해 둔 사본을 쓰지 말고 늘 서버에서 받는다
+  PACK = await (await fetch(`topics/${id}.json`, { cache: "no-store" })).json();
   idx = 0; answers = [];
   $("topic-name").textContent = `${PACK.emoji} ${PACK.title}`;
   renderQ();
@@ -292,7 +306,7 @@ async function share() {
   const grade = $("grade").textContent;
   const url = `${location.origin}${location.pathname}` +
     `?t=${encodeURIComponent(PACK.id)}&s=${total}&g=${encodeURIComponent(grade)}`;
-  const text = `감 테스트 · ${PACK.title} ${total}점 · ${grade}`;
+  const text = `${INDEX.title} · ${PACK.title} ${total}점 · ${grade}`;
   try {
     if (navigator.share) { await navigator.share({ title: INDEX.title, text, url }); return; }
     await navigator.clipboard.writeText(`${text}\n${url}`);

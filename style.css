@@ -16,20 +16,21 @@
   --display: "Jua", -apple-system, "Apple SD Gothic Neo", sans-serif;
 }
 
-/* 첫 화면만 밝은 버터색. ok 는 밝은 바탕에서 읽히도록 진하게 잡았습니다. */
+/* 첫 화면만 흰 바탕에 태극 두 색(빨강·파랑). ok 는 밝은 바탕에서 읽히도록 진하게 잡았습니다. */
 #view-home {
-  --bg: #fff4d6;
+  --bg: #ffffff;
   --card: #ffffff;
-  --line: #e6dbbd;
-  --ink: #1f1a3d;
-  --muted: #5b5575;
-  --brand: #5b4bdb;
+  --line: #e3e6ee;
+  --ink: #111111;
+  --muted: #5f6470;
+  --brand: #0047a0;
+  --red: #cd2e3a;
   --ok: #0b7a53;
   color: var(--ink);
 }
-/* 첫 화면이 보이는 동안만 페이지 바탕을 밝게 바꾼다 */
+/* 첫 화면이 보이는 동안만 페이지 바탕을 희게 바꾼다 */
 html:has(#view-home:not([hidden])),
-html:has(#view-home:not([hidden])) body { background: #fff4d6; }
+html:has(#view-home:not([hidden])) body { background: #ffffff; }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
@@ -73,16 +74,23 @@ h2 { font-size: 21px; line-height: 1.4; margin: 6px 0 22px; letter-spacing: -.3p
   margin: 12px 0 8px; padding-right: 96px;
 }
 .hero #subtitle { color: var(--ink); font-weight: 600; margin: 0; }
+.hero .t-red { color: var(--red); }
+.hero .t-blue { color: var(--brand); }
+/* 맨 위 빨강·파랑 띠. #app 의 안쪽 여백만큼 밖으로 꺼내 화면 끝까지 닿게 한다 */
+.band { display: flex; height: 10px; margin: -24px -20px 0; }
+.band i { flex: 1; }
+.band i:first-child { background: var(--red); }
+.band i:last-child { background: var(--brand); }
 .badge-day {
   display: inline-block; font-size: 12px; font-weight: 700;
-  color: var(--bg); background: var(--ink);
+  color: #ffffff; background: var(--brand);
   border-radius: 999px; padding: 4px 12px;
 }
 .sticker {
   position: absolute; top: 58px; right: 0;
   width: 84px; height: 84px; border-radius: 50%;
   display: grid; place-items: center; text-align: center;
-  background: #ff8a65; border: 2px solid var(--ink);
+  background: var(--red); color: #ffffff;
   font-family: var(--display); font-size: 16px; line-height: 1.2;
   transform: rotate(10deg);
 }
@@ -238,19 +246,32 @@ details[open] summary::after { content: " ▴"; }
 /* ── 주제 고르기 ──────────────────────────────── */
 .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 6px 0 18px; }
 .tcard {
-  background: #ffd1dc; border: 2px solid var(--ink); color: var(--ink);
+  background: #fdecee; border: 0; color: var(--ink);
   border-radius: 18px; padding: 14px; text-align: left;
-  box-shadow: 4px 4px 0 var(--ink);
   display: flex; flex-direction: column; gap: 6px; min-height: 150px;
-  position: relative; transition: transform .06s ease, box-shadow .06s ease;
+  position: relative; transition: transform .06s ease;
 }
-/* 카드 색은 다섯 가지가 차례로 돈다 */
-.tcard:nth-child(5n+2) { background: #c8f0d8; }
-.tcard:nth-child(5n+3) { background: #cfe3ff; }
-.tcard:nth-child(5n+4) { background: #e3d4ff; }
-.tcard:nth-child(5n+5) { background: #ffe08a; }
-.tcard:active { transform: translate(3px, 3px); box-shadow: 1px 1px 0 var(--ink); }
+/* 두 칸 격자에서 빨강·파랑 바탕이 바둑판처럼 엇갈리게 한다 */
+.tcard:nth-child(4n+2), .tcard:nth-child(4n+3) { background: #e8f0fb; }
+.tcard:active { transform: scale(.98); }
 .temoji { font-size: 30px; line-height: 1; }
+/* 이모지 대신 3D 그림 여러 장을 조금씩 겹쳐 한 무리로 보인다 (가족 등) */
+.tart { display: flex; align-items: flex-end; height: 34px; }
+.tart img { width: 30px; height: 30px; margin-right: -9px; }
+.tart img:nth-child(n+3) { width: 24px; height: 24px; }   /* 아이들은 조금 작게 */
+
+/* 흔들림: 움직이지 않고, 👋 처럼 양옆 떨림 선 두 겹과 살짝 기운 모양으로 흔들리는 느낌만 준다 */
+.temoji.fx-shake {
+  position: relative; display: inline-block; align-self: flex-start;
+  margin-left: 14px; transform: rotate(-10deg);
+}
+.temoji.fx-shake::before, .temoji.fx-shake::after {
+  content: ""; position: absolute; top: 50%; width: 12px; height: 24px;
+  transform: translateY(-50%) rotate(10deg);
+  background: no-repeat center / contain url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 24' fill='none' stroke='%235f6470' stroke-width='1.8' stroke-linecap='round'%3E%3Cpath d='M10 5Q6 12 10 19'/%3E%3Cpath d='M5 2Q0 12 5 22'/%3E%3C/svg%3E");
+}
+.temoji.fx-shake::before { left: -15px; }
+.temoji.fx-shake::after { right: -15px; scale: -1 1; }
 .ttitle { font-family: var(--display); font-size: 19px; font-weight: 400; line-height: 1.25; }
 .tblurb { font-size: 12px; color: var(--ink); line-height: 1.45; font-weight: 400; }
 .tscore {

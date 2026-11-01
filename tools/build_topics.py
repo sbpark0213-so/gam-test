@@ -15,6 +15,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import sys
 import datetime as dt
 from collections import Counter
@@ -43,12 +44,6 @@ def load_csv(name):
     return list(csv.DictReader(io.open(RAW / name, encoding="utf-8")))
 
 
-# World Bank·OWID 응답에는 '유럽연합' '고소득국' 같은 **집계치**가 섞여 있다.
-# 그대로 순위를 매기면 나라와 대륙을 한 줄에 놓고 세는 셈이 된다.
-REAL = {x["id"] for x in load_json("wb_countries.json")[1]
-        if x["region"]["id"] != "NA"}
-
-
 def wb_countries(rows, year):
     """그 해의 실제 국가 값만 남긴다 (집계치 제외)."""
     return {r["country"]["value"]: r["value"] for r in rows
@@ -62,14 +57,17 @@ def owid_countries(rows, year, col):
             and not r["code"].startswith("OWID")}
 
 
-def topic(tid, emoji, title, blurb, source, source_url, questions, caveat=""):
+def topic(tid, emoji, title, blurb, source, source_url, questions, caveat="", fx="", art=()):
     """caveat = 이 데이터를 믿을 때의 한계. 앱 화면에도 그대로 나간다.
+    fx = 첫 화면 카드 이모지 효과 (예: "shake" 흔들림). 없으면 비워 둔다.
+    art = 첫 화면 카드에서 이모지 대신 겹쳐 보일 그림 파일들 (images/ 아래). 없으면 이모지.
 
     출처가 다르면 같은 '서울 기온'도 값이 다르다. 그 사실을 감추지 않는다.
     """
     TOPICS.append({"id": tid, "emoji": emoji, "title": title, "blurb": blurb,
                    "source": source, "source_url": source_url,
-                   "caveat": caveat, "questions": questions})
+                   "caveat": caveat, "questions": questions, "fx": fx,
+                   "art": list(art)})
 
 
 def slider(qid, text, answer, unit, lo, hi, step, basis, why):
@@ -82,6 +80,709 @@ def choice(qid, text, options, answer, basis, why):
     assert answer in options, f"{qid}: 정답이 선택지에 없습니다"
     return {"id": qid, "type": "choice", "text": text, "options": options,
             "answer": answer, "basis": basis, "why": why}
+
+
+# ── 12. 광역시 인구 ──────────────────────────────────────────────
+# OECD 표에는 같은 전국(KOR) 값이 '도시권·농촌' 같은 지역 유형별로도 들어 있다.
+# 유형을 나누지 않은 줄(_Z)만 쓴다. 성별은 남녀 합(_T)만 쓴다
+def metro_pop():
+    P = [r for r in load_csv("oecd_metro_pop_1990.csv")
+         if r["TERRITORIAL_TYPE"] == "_Z" and r["SEX"] == "_T"]
+
+    def val(area, measure, age, year):
+        v = [float(r["OBS_VALUE"]) for r in P
+             if r["REF_AREA"] == area and r["MEASURE"] == measure
+             and r["AGE"] == age and r["TIME_PERIOD"] == str(year)]
+        assert len(v) == 1, f"{area} {measure} {age} {year}: 값이 {len(v)}개입니다"
+        return v[0]
+
+    # 원본의 전국 총인구 줄은 해에 따라 시·도 값과 기준이 다르다 (2011년 단절 표시).
+    # 2020년은 전국 줄과 17개 시·도 합이 같은 해라서, 전국으로 나누는 문항은 2020년으로 센다
+    seoul20, kor20 = val("KR011", "POP", "_T", 2020), val("KOR", "POP", "_T", 2020)
+    seoul_share = seoul20 / kor20 * 100
+    seoul24, busan24 = val("KR011", "POP", "_T", 2024), val("KR021", "POP", "_T", 2024)
+    births24, seoul_b24 = val("KOR", "LIVE_BIRTHS", "Y0", 2024), val("KR011", "LIVE_BIRTHS", "Y0", 2024)
+    seoul_b_share = seoul_b24 / births24 * 100
+    old20 = val("KOR", "POP", "Y_GE65", 2020)
+    old_share = old20 / kor20 * 100
+    sejong15, sejong24 = val("KR054", "POP", "_T", 2015), val("KR054", "POP", "_T", 2024)
+
+    topic(
+        "metro-pop", "👨‍👩‍👧‍👦", "우리는 어디에 모여 살까",
+        "1990~2024년 대한민국 인구 변화",
+        "OECD Regional Demography", "https://data-explorer.oecd.org/",
+        [
+            slider("m1", "2020년 전국 인구 중 서울에 사는 사람은 몇 %일까요?",
+                   seoul_share, "%", 0, 50, 0.5,
+                   f"2020년 총인구 서울 {seoul20:,.0f}명 ÷ 전국 {kor20:,.0f}명 "
+                   f"× 100 = {seoul_share:.1f}%",
+                   "수도권 집중이라는 말이 익숙해서 서울 한 곳의 비중을 크게 "
+                   "잡기 쉽습니다."),
+            slider("m2", "2024년 서울 인구는 부산 인구의 몇 배일까요?",
+                   seoul24 / busan24, "배", 1, 5, 0.1,
+                   f"2024년 총인구 서울 {seoul24:,.0f}명 ÷ 부산 {busan24:,.0f}명 "
+                   f"= {seoul24 / busan24:.2f}배",
+                   "제2의 도시라는 이름 때문에 두 도시의 차이를 작게 잡게 됩니다."),
+            slider("m3", "2024년 태어난 아이 중 서울에서 태어난 아이는 몇 %일까요?",
+                   seoul_b_share, "%", 0, 40, 0.5,
+                   f"2024년 출생아 수 서울 {seoul_b24:,.0f}명 ÷ 전국 {births24:,.0f}명 "
+                   f"× 100 = {seoul_b_share:.1f}%",
+                   "서울에 사람이 많이 사니 아이도 그만큼 많이 태어날 거라고 "
+                   "생각하기 쉽습니다."),
+            slider("m4", "2020년 전국 인구 중 65세 이상은 몇 %일까요?",
+                   old_share, "%", 0, 40, 0.5,
+                   f"2020년 65세 이상 {old20:,.0f}명 ÷ 전국 총인구 {kor20:,.0f}명 "
+                   f"× 100 = {old_share:.1f}%",
+                   "고령화는 '다가올 일'로 느껴지지만, 이미 다섯 명 중 한 명에 "
+                   "가까워졌습니다."),
+            slider("m5", "2024년 세종시 인구는 2015년의 몇 배일까요?",
+                   sejong24 / sejong15, "배", 1, 8, 0.1,
+                   f"세종 총인구 2015년 {sejong15:,.0f}명 → 2024년 {sejong24:,.0f}명, "
+                   f"2024년 ÷ 2015년 = {sejong24 / sejong15:.2f}배",
+                   "새로 생긴 도시는 작은 데서 시작해서, 늘어난 폭이 "
+                   "다른 도시와 크기가 다릅니다."),
+        ],
+        caveat="주민등록 집계가 아닌 OECD의 7월 1일 기준 추계이고, 전국 비율은 시 · 도 합과 맞는 "
+               "2020년으로 셌기 때문에 행정안전부 · 통계청 발표와 다릅니다.",
+        # 마이크로소프트 Fluent 3D 이모지(MIT)에는 가족 한 장이 없어 네 사람을 겹쳐 보인다
+        art=[f"images/fluent/{n}_3d_light.png" for n in ("man", "woman", "girl", "boy")])
+
+
+# ── 9. 지진 ──────────────────────────────────────────────────────
+# 한반도 원본은 위도·경도 사각형이라 일본·북한 지진도 들어 있다.
+# USGS 가 위치 이름 끝을 'South Korea' 로 적은 것만 대한민국 지진으로 센다.
+# 날짜는 한국 시간으로 센다
+def quakes():
+    QK = [f["properties"] for f in load_json("quakes_korea.geojson")["features"]]
+    K9 = dt.timezone(dt.timedelta(hours=9))
+
+    def kst(p):
+        return dt.datetime.fromtimestamp(p["time"] / 1000, K9)
+
+    # 기간은 받은 한반도 원본 전체의 해에서 센다 (대한민국 지진이 없는 해도 햇수에 든다)
+    y0, y1 = min(kst(p).year for p in QK), max(kst(p).year for p in QK)
+    span = f"{y0}~{y1}년"
+    SK = [p for p in QK
+          if (p["place"] or "").split(",")[-1].strip() == "South Korea"
+          and p["type"] == "earthquake"]
+    head = f"{span} USGS 규모 3.0 이상 기록 중 위치가 South Korea로 적힌 {len(SK)}건"
+    top = max(SK, key=lambda p: p["mag"])
+
+    # 지역: 위치 이름은 '거리 km 방향 of 지명' 꼴이다. 지명에서 50km 안의 지진만 세고
+    # (먼바다 지진 제외), 흥해는 포항시의 읍이라 포항으로 합친다. 지명이 없는 줄은 뺀다
+    NEAR_KM = 50
+    town_ko = {"Gyeongju": "경주", "Heunghae": "포항", "Pohang": "포항", "Tonghae": "동해",
+               "Sinan": "신안", "Puan": "부안", "Mungyeong": "문경", "Ulsan": "울산",
+               "Iksan": "익산", "Gaigeturi": "제주", "Sokcho": "속초",
+               "Pyeongchang": "평창", "Kyosai": "거제"}
+    near = []
+    for p in SK:
+        m = re.match(r"(?:(\d+) ?km \w+ of )?(.+), South Korea$", p["place"])
+        if m and int(m.group(1) or 0) <= NEAR_KM:
+            near.append(town_ko[m.group(2)])
+    by_town = Counter(near).most_common()
+    assert by_town[0][1] > by_town[1][1], f"지역 1위가 동률입니다: {by_town[:3]}"
+
+    by_year = Counter(kst(p).year for p in SK).most_common()
+    assert by_year[0][1] > by_year[1][1], f"연도 1위가 동률입니다: {by_year[:3]}"
+    m5 = [p for p in SK if p["mag"] >= 5.0]
+
+    topic(
+        "quakes", "🌏", "대한민국도 지진 안전지대일까",
+        f"{span} 대한민국 지진 기록",
+        "USGS 지진 카탈로그", "https://earthquake.usgs.gov/",
+        [
+            slider("k1", "2025년까지 발생한 지진의 최고 규모는 몇일까요?",
+                   top["mag"], "", 3.0, 9.0, 0.1,
+                   f"{head}에서 가장 큰 값은 {kst(top):%Y년 %m월 %d일} "
+                   f"{top['place']} 규모 {top['mag']}입니다",
+                   "큰 지진은 뉴스로 기억하는데, 기관마다 규모를 다르게 재서 "
+                   "기억하는 숫자와 기록이 다를 수 있습니다."),
+            choice("k2", "대한민국에서 지진이 가장 많이 발생한 지역은 어디일까요?",
+                   ["경주", "포항", "울산", "부산"], by_town[0][0],
+                   f"{head} 중 지명에서 {NEAR_KM}km 안인 {len(near)}건을 흥해는 포항에 "
+                   "합쳐 도시별로 세면 "
+                   + " · ".join(f"{t} {n}건" for t, n in by_town[:3]) + "입니다",
+                   "가장 큰 지진이 난 곳과 지진이 가장 자주 난 곳은 같지 않을 수 "
+                   "있습니다."),
+            choice("k3", "지진이 가장 많이 발생한 해는 몇 년일까요?",
+                   ["2011년", "2016년", "2017년", "2023년"], f"{by_year[0][0]}년",
+                   f"{head}을 한국 시간 기준 해마다 세면 "
+                   + " · ".join(f"{y}년 {n}건" for y, n in by_year[:3]) + "입니다",
+                   "가까운 나라의 큰 지진이 난 해와 우리나라에서 지진이 잦았던 해는 "
+                   "다릅니다."),
+            # 여진도 한 건씩 센다
+            slider("k4", "규모 3.0 이상 지진은 총 몇 건 발생했을까요?",
+                   len(SK), "건", 0, 200, 1,
+                   f"{span} USGS 규모 3.0 이상 기록에서 위치가 South Korea로 적힌 것을 "
+                   f"여진까지 한 건씩 세면 {len(SK)}건입니다",
+                   "USGS는 작은 지진을 다 잡지 못해서, 기상청 집계를 떠올리면 훨씬 "
+                   "많게 잡게 됩니다."),
+            slider("k5", "규모 5.0 이상 지진은 몇 번 일어났을까요?",
+                   len(m5), "번", 0, 20, 1,
+                   f"{head} 중 규모 5.0 이상은 "
+                   + " · ".join(f"{kst(p):%Y년} {p['mag']}" for p in
+                                sorted(m5, key=lambda p: p["time"]))
+                   + f", 모두 {len(m5)}번입니다",
+                   "큰 지진은 뉴스로 여러 번 보기 때문에 실제보다 자주 난 것처럼 "
+                   "기억됩니다."),
+        ],
+        caveat=f"기상청이 아닌 USGS 기록과 규모라 기상청보다 횟수가 적고 경주 · 포항 규모 순서도 "
+               f"다르며, 여진은 따로 세고 지역은 가장 가까운 지명 {NEAR_KM}km 안만 셌습니다.",
+        fx="shake")
+
+
+# ── 13. 태풍 ─────────────────────────────────────────────────────
+# IBTrACS 북서태평양 최적경로. 태풍마다 3시간(옛 기록은 6시간) 간격 위치 점이 한 줄씩 있다.
+# 기상청(KMA_) 열은 2015년부터만 있어서 일본기상청(TOKYO_) 값을 쓴다.
+# 원본에는 '어느 나라에 상륙했나' 열이 없다. 그래서 상륙은 이렇게 센다:
+#   남한 사각형(위도 33~38.6 · 경도 124.5~130) 안에서 육지까지 거리(DIST2LAND)가 0km 인 점이
+#   하나라도 있으면 상륙. 위도 35도 아래·경도 129도 동쪽은 대마도·이키·규슈라 뺀다. 제주는 넣는다.
+#   그 첫 육지 점에서 일본기상청 등급이 태풍 세기(3 열대폭풍 · 4 강한 열대폭풍 · 5 태풍 ·
+#   9 열대폭풍 이상, 옛 기록)일 때만 '상륙한 태풍'으로 친다
+TY_FROM, TY_TO = 1951, 2025      # 일본기상청 기록이 시작한 해 ~ 다 끝난 마지막 해
+KT_TO_MS = 0.514444              # 노트 → 초속(m/s)
+
+
+def typhoon():
+    keep = ("SID", "SEASON", "NAME", "ISO_TIME", "LAT", "LON", "DIST2LAND", "TRACK_TYPE",
+            "TOKYO_GRADE", "TOKYO_WIND", "TOKYO_PRES", "KMA_LAT")
+    tracks: dict[str, list] = {}
+    kma_years = set()
+    # 110MB 라 한 줄씩 읽고 쓸 열만 남긴다. 둘째 줄은 단위 줄이라 건너뛴다
+    for r in csv.DictReader(io.open(RAW / "ibtracs_wp.csv", encoding="utf-8")):
+        if not r["SEASON"].isdigit():
+            continue
+        if r["KMA_LAT"].strip():
+            kma_years.add(int(r["SEASON"]))
+        if TY_FROM <= int(r["SEASON"]) <= TY_TO:
+            tracks.setdefault(r["SID"], []).append({k: r[k].strip() for k in keep})
+
+    K9 = dt.timezone(dt.timedelta(hours=9))
+
+    def kst(x):
+        return dt.datetime.fromisoformat(x["ISO_TIME"]).replace(tzinfo=dt.UTC).astimezone(K9)
+
+    def in_box(x):
+        la, lo = float(x["LAT"]), float(x["LON"])
+        return 33 <= la <= 38.6 and 124.5 <= lo <= 130 and not (la < 35 and lo > 129.0)
+
+    LAND = []
+    for v in tracks.values():
+        i = next((i for i, x in enumerate(v) if in_box(x) and x["DIST2LAND"] == "0"), None)
+        if i is None or v[i]["TOKYO_GRADE"] not in ("3", "4", "5", "9"):
+            continue
+        box = [x for x in v if in_box(x)]
+        # 상륙 무렵 = 육지 위 첫 점과 그 바로 앞 점. 풍속이 있는 점 중 (풍속 큰, 기압 낮은) 점
+        near = [x for x in v[max(i - 1, 0):i + 1] if x["TOKYO_WIND"] and x["TOKYO_PRES"]]
+        best = max(near, key=lambda x: (float(x["TOKYO_WIND"]), -float(x["TOKYO_PRES"])),
+                   default=None)
+        LAND.append({"year": int(v[0]["SEASON"]), "name": v[0]["NAME"], "at": kst(v[i]),
+                     "best": best, "hours": (kst(box[-1]) - kst(box[0])).total_seconds() / 3600,
+                     "provisional": any(x["TRACK_TYPE"] != "main" for x in v)})
+    span = f"{TY_FROM}~{TY_TO}년"
+    head = f"{span} 일본기상청 기록으로 우리 땅(제주 포함)에 상륙할 때도 태풍이었던 {len(LAND)}개"
+
+    # 1. 상륙 무렵 가장 셌던 태풍: 풍속이 같으면 같은 점의 중심기압이 낮은 쪽
+    def power(t):
+        return (float(t["best"]["TOKYO_WIND"]), -float(t["best"]["TOKYO_PRES"]))
+    rated = sorted((t for t in LAND if t["best"]), key=power, reverse=True)
+    assert power(rated[0]) != power(rated[1]), f"1번 동률: {rated[0]['name']} {rated[1]['name']}"
+    top = rated[0]
+    tied = [t for t in rated[1:] if power(t)[0] == power(top)[0]]
+    wind_from = min(t["year"] for t in rated)
+    name_ko = {"MAEMI": "매미", "RUSA": "루사", "MAYSAK": "마이삭", "HINNAMNOR": "힌남노",
+               "HAISHEN": "하이선", "SANBA": "산바", "THELMA": "셀마"}
+    assert top["name"] in name_ko, f"1번 정답 {top['name']} 의 한글 이름을 name_ko 에 넣으세요"
+
+    # 2. 매미(2003) 상륙 무렵 풍속
+    maemi = next(t for t in LAND if t["name"] == "MAEMI" and t["year"] == 2003)
+    maemi_kt = float(maemi["best"]["TOKYO_WIND"])
+
+    # 3. 상륙이 가장 많은 달 (첫 육지 점의 한국 시간)
+    by_month = Counter(t["at"].month for t in LAND).most_common()
+    assert by_month[0][1] > by_month[1][1], f"3번 동률: {by_month[:3]}"
+
+    # 4. 우리나라 근처(사각형 안)에 머문 시간: 사각형 안 첫 점 ~ 마지막 점
+    stay = mean(t["hours"] for t in LAND)
+
+    # 5. 10년을 다 채운 연대 중 보기의 네 연대만 건수로 비교
+    DECADES = (1980, 1990, 2000, 2010)
+    by_dec = {d: sum(1 for t in LAND if d <= t["year"] <= d + 9) for d in DECADES}
+    dec_rank = sorted(by_dec.items(), key=lambda kv: -kv[1])
+    assert dec_rank[0][1] > dec_rank[1][1], f"5번 동률: {dec_rank}"
+
+    n_prov = sum(t["provisional"] for t in LAND)
+    # 부제목에 이름을 쓴 두 태풍이 정말 상륙 태풍 목록에 있는지 확인한다
+    for y, n in ((2002, "RUSA"), (2022, "HINNAMNOR")):
+        assert any(t["year"] == y and t["name"] == n for t in LAND), f"부제목의 {n} 이 상륙 목록에 없습니다"
+    topic(
+        "typhoon", "🌀", "태풍 상륙 연대기",
+        "루사부터 힌남노까지, 상륙 태풍의 기록",
+        "NOAA IBTrACS (일본기상청 최적경로)",
+        "https://www.ncei.noaa.gov/products/international-best-track-archive",
+        [
+            choice("t1", "어떤 태풍이 가장 거세게 우리 땅을 덮쳤을까요?",
+                   ["루사", "매미", "마이삭", "힌남노"], name_ko[top["name"]],
+                   f"{head} 중 일본기상청 풍속이 있는 {wind_from}년 이후 {len(rated)}개를 "
+                   "상륙 직전·직후 최대풍속으로 줄 세우고, 같으면 그때 중심기압이 낮은 쪽을 "
+                   f"위로 두면 {top['year']}년 {name_ko[top['name']]}"
+                   f"({float(top['best']['TOKYO_WIND']):.0f}노트 · {top['best']['TOKYO_PRES']}hPa)"
+                   + (" · 풍속이 같은 " + " · ".join(
+                       f"{t['year']}년 {name_ko.get(t['name'], t['name'])}"
+                       f"({t['best']['TOKYO_PRES']}hPa)" for t in tied) if tied else "")
+                   + "입니다",
+                   "피해가 컸던 태풍과 상륙할 때 가장 셌던 태풍은 같지 않을 수 있습니다."),
+            slider("t2", "2003년 매미의 바람 세기는 초속 몇 m였을까요?",
+                   maemi_kt * KT_TO_MS, "m/s", 10, 70, 1,
+                   f"일본기상청 기록에서 매미의 상륙 직전·직후 최대풍속(10분 평균)은 "
+                   f"{maemi_kt:.0f}노트로, 1노트 = {KT_TO_MS}m/s 로 바꾸면 초속 "
+                   f"{maemi_kt * KT_TO_MS:.1f}m입니다",
+                   "순간 최대풍속 뉴스를 기억하면 크게 잡게 됩니다. 이 값은 10분 동안의 "
+                   "평균입니다."),
+            choice("t3", "태풍이 가장 많이 상륙한 달은 언제일까요?",
+                   ["7월", "8월", "9월", "10월"], f"{by_month[0][0]}월",
+                   f"{head}를 상륙한 달(한국 시간)로 세면 "
+                   + " · ".join(f"{m}월 {n}개" for m, n in by_month[:3]) + "입니다",
+                   "가을 태풍이 크게 기억에 남아서 9월을 고르기 쉽습니다."),
+            slider("t4", "태풍은 우리나라 근처에 평균 몇 시간 머무를까요?",
+                   stay, "시간", 0, 72, 1,
+                   f"{head}가 남한 둘레 사각형(위도 33~38.6 · 경도 124.5~130, 바다 포함) 안에 "
+                   f"찍힌 첫 점부터 마지막 점까지 걸린 시간을 평균하면 {stay:.1f}시간입니다",
+                   "며칠씩 이어진 비바람 뉴스 때문에 오래 머문다고 느끼기 쉽습니다."),
+            choice("t5", "태풍이 가장 많이 상륙한 연대는 언제일까요?",
+                   [f"{d}년대" for d in DECADES], f"{dec_rank[0][0]}년대",
+                   f"{head}를 연대별로 세면 "
+                   + " · ".join(f"{d}년대 {n}개" for d, n in by_dec.items()) + "입니다",
+                   "'요즘 태풍이 잦다'는 느낌이 기록과 맞는지는 세어 봐야 압니다."),
+        ],
+        caveat=f"기상청 값은 {min(kma_years)}년부터만 있어 일본기상청 풍속({wind_from}년부터, 10분 평균 · "
+               "5노트 단위)을 썼고, 위치 점이 남한 땅 위에 찍힌 태풍만 상륙으로 세어 해안을 스친 태풍은 "
+               "빠지므로 기상청 발표와 다를 수 있습니다"
+               + (f" (그중 {n_prov}개는 잠정 경로)" if n_prov else "") + ".")
+
+
+# ── 14. 대한민국 기온 ────────────────────────────────────────────
+# 세계은행 CCKP: ERA5 0.25도 격자를 대한민국 범위로 평균한 값. 연 파일은 해마다 '연-07' 한 칸이다.
+# 원본은 1950~2023 이고, 이 주제는 2000~2023 만 쓴다
+HEAT_FROM, HEAT_TO = 2000, 2023
+
+
+def korea_heat():
+    A = {v: x["KOR"] for v, x in load_json("cckp_kor_temp_annual.json")["data"].items()}
+
+    def a(v, y):
+        return A[v][f"{y}-07"]
+
+    Y = range(HEAT_FROM, HEAT_TO + 1)
+    span = f"{HEAT_FROM}~{HEAT_TO}년"
+    head = "세계은행 CCKP의 대한민국 평균(ERA5)"
+    txx0, txx1 = a("txx", HEAT_FROM), a("txx", HEAT_TO)
+    # 5번: 2000년대(2000~2009)와 최근 10년(끝 해까지 10년)의 하루 최저기온 1년 평균
+    OLD, NEW = range(HEAT_FROM, HEAT_FROM + 10), range(HEAT_TO - 9, HEAT_TO + 1)
+    tn0, tn1 = mean(a("tasmin", y) for y in OLD), mean(a("tasmin", y) for y in NEW)
+    hd30 = mean(a("hd30", y) for y in Y)
+
+    def top_year(v):
+        r = sorted(Y, key=lambda y: -a(v, y))
+        assert a(v, r[0]) != a(v, r[1]), f"{v} 1위 동률: {r[:2]}"
+        return r
+
+    hot, hot35 = top_year("tas"), top_year("hd35")
+    hot_txx = top_year("txx")[0]     # 한계 문장의 예: 가장 더운 날 기온이 가장 높았던 해
+    YEARS = ["2013년", "2016년", "2018년", "2023년"]
+
+    topic(
+        "korea-heat", "🥵", "대한민국은 얼마나 뜨거워졌나",
+        f"{span} 대한민국 평균 기온",
+        "World Bank Climate Change Knowledge Portal (ERA5)",
+        "https://climateknowledgeportal.worldbank.org/country/korea-republic/climate-data-historical",
+        [
+            slider("c1", f"{HEAT_FROM}년 대비 {HEAT_TO}년 최고온도는 몇 ℃나 상승했을까요?",
+                   txx1 - txx0, "℃", -3, 5, 0.1,
+                   f"{head}에서 한 해 가장 더운 날의 최고기온은 {HEAT_FROM}년 {txx0:.2f}℃ → "
+                   f"{HEAT_TO}년 {txx1:.2f}℃로 {txx1 - txx0:+.2f}℃입니다",
+                   "두 해만 비교하면 그해 날씨에 따라 크게 흔들립니다. 오름폭은 기억보다 "
+                   "작거나 클 수 있습니다."),
+            choice("c2", f"{span} 중 가장 더웠던 해는 언제일까요?",
+                   YEARS, f"{hot[0]}년",
+                   f"{head}의 연평균 기온으로 줄 세우면 "
+                   + " · ".join(f"{y}년 {a('tas', y):.2f}℃" for y in hot[:3]) + "입니다",
+                   "폭염이 심했던 해와 1년 전체가 가장 더웠던 해는 다를 수 있습니다."),
+            slider("c3", "30℃ 넘는 날은 1년에 며칠일까요?",
+                   hd30, "일", 0, 90, 1,
+                   f"{head}에서 하루 최고기온 30℃를 넘은 날 수를 {span} 평균하면 "
+                   f"{hd30:.1f}일입니다",
+                   "더운 도시의 여름만 떠올리면 많게 잡습니다. 산간·해안까지 합친 전국 "
+                   "평균은 다릅니다."),
+            choice("c4", "35℃ 넘는 날이 가장 많았던 해는 언제일까요?",
+                   YEARS, f"{hot35[0]}년",
+                   f"{head}에서 하루 최고기온 35℃를 넘은 날 수를 {span} 해마다 세면 "
+                   + " · ".join(f"{y}년 {a('hd35', y):.1f}일" for y in hot35[:3]) + "입니다",
+                   "1년 평균이 가장 더운 해와 가장 뜨거운 날이 많았던 해는 다릅니다."),
+            slider("c5", "2000년대보다 최근 10년, 밤 기온은 몇 ℃ 올랐을까요?",
+                   tn1 - tn0, "℃", -2, 4, 0.1,
+                   f"{head}에서 하루 최저기온의 1년 평균을 다시 평균하면 "
+                   f"{OLD[0]}~{OLD[-1]}년 {tn0:.2f}℃ → {NEW[0]}~{NEW[-1]}년 {tn1:.2f}℃로 "
+                   f"{tn1 - tn0:+.2f}℃입니다",
+                   "낮 더위만 기억하기 쉽지만, 밤 기온도 함께 오릅니다."),
+        ],
+        caveat="관측이 아닌 ERA5 추정값의 전국 격자 평균(2023년까지)이라 가장 더운 날도 평균으로 나와"
+               f"(예: {hot_txx}년 {a('txx', hot_txx):.1f}℃) 관측소 · 기상청 기록보다 낮고 적습니다.")
+
+
+# ── 세계유산 ─────────────────────────────────────────────────────
+# 유네스코 세계유산 목록 전체(whc001)에서 나라 칸이 대한민국 하나뿐인 줄만 쓴다.
+# 이름에 Korea 가 든 북한 유산은 나라 칸이 달라 빠진다. 한 줄 = 등재된 유산 1건
+# (조선왕릉처럼 여러 장소를 묶은 유산도 1건으로 센다). 원본에는 2026년 등재도 있어 2025년까지만 쓴다
+WHC_TO = 2025
+
+
+def heritage():
+    K = [r for r in load_json("unesco_whc.json")
+         if r["states_names"] == ["Republic of Korea"] and int(r["date_inscribed"]) <= WHC_TO]
+    yr = lambda r: int(r["date_inscribed"])
+    first = min(yr(r) for r in K)
+    natural = [r for r in K if r["category"] == "Natural"]
+    per_year = Counter(yr(r) for r in K)
+    top = per_year.most_common()
+    assert top[0][1] != top[1][1], f"가장 많이 등재된 해 동률: {top[:2]}"
+    tombs = [r for r in K if r["name_en"].startswith("Royal Tombs of the Joseon")]
+    assert len(tombs) == 1, "조선왕릉 줄이 하나가 아닙니다"
+    tombs = tombs[0]
+    span = f"{first}~{WHC_TO}년"
+    head = f"유네스코 세계유산 목록에서 나라가 대한민국인 유산({span} 등재)"
+
+    topic(
+        "heritage", "🏯", "우리 세계유산 몇 개 알아요?",
+        f"{span} 유네스코 세계유산 등재 기록",
+        "UNESCO World Heritage List (whc001)",
+        "https://data.unesco.org/explore/dataset/whc001/",
+        [
+            slider("h1", f"{WHC_TO}년까지 등재된 우리나라 세계유산은 몇 개일까요?",
+                   len(K), "개", 0, 40, 1,
+                   f"{head}을 등재된 유산 1건을 1개로 세면 {len(K)}개입니다"
+                   f"(문화유산 {len(K) - len(natural)}개 · 자연유산 {len(natural)}개)",
+                   "김치·판소리 같은 무형유산이나 훈민정음 같은 기록유산까지 합쳐 떠올리면 "
+                   "많게 잡습니다."),
+            choice("h2", "우리나라 세계유산이 처음 등재된 해는?",
+                   ["1988년", "1995년", "2000년", "2007년"], f"{first}년",
+                   f"{head} 중 가장 이른 등재 연도는 {first}년이고, 그해 "
+                   f"{per_year[first]}건이 함께 등재됐습니다",
+                   "올림픽을 치른 1988년 무렵이나 2000년대 이후로 짐작하기 쉽습니다."),
+            choice("h3", "우리나라 세계유산 중 자연유산은 몇 개일까요?",
+                   ["1개", "2개", "3개", "5개"], f"{len(natural)}개",
+                   f"{head} 중 유형이 자연유산(Natural)인 것은 "
+                   + " · ".join(f"{r['name_en']}({yr(r)})" for r in sorted(natural, key=yr))
+                   + f"으로 {len(natural)}개입니다",
+                   "산과 바다가 많아 자연유산도 여럿일 것 같지만, 대부분은 문화유산입니다."),
+            choice("h4", "한 해에 세계유산이 가장 많이 등재된 해는?",
+                   ["1995년", "1997년", "2000년", "2010년"], f"{top[0][0]}년",
+                   f"{head}을 등재 연도별로 세면 "
+                   + " · ".join(f"{y}년 {n}건" for y, n in top[:3]) + "입니다",
+                   "최근일수록 많이 등재됐을 것 같지만, 한 해에 한 건 넘게 오른 해는 드뭅니다."),
+            choice("h5", "조선왕릉이 세계유산에 등재된 해는?",
+                   ["2000년", "2005년", "2009년", "2014년"], f"{yr(tombs)}년",
+                   f"{head} 중 {tombs['name_en']}의 등재 연도는 {yr(tombs)}년입니다"
+                   f"(왕릉 {tombs['components_count']}곳을 묶어 1건)",
+                   "오래된 유적이라 일찍 등재됐을 것 같지만, 등재 시기는 유적의 나이와 상관없습니다."),
+        ],
+        caveat=f"세계유산만 센 것이라 무형 · 기록유산(예: 직지심체요절)은 빠지고, 여러 장소를 묶은 "
+               f"유산(예: 조선왕릉 18곳)도 1건으로 셌으며 {WHC_TO + 1}년 등재 · 확장은 넣지 않았습니다.")
+
+
+# ── 술 ───────────────────────────────────────────────────────────
+# 소비량은 세계은행에 실린 WHO 추정값(15세 이상 1인당 순수 알코올 L). 원본은 2000~2020 인데
+# 2000년 값이 2001년과 소수점까지 같아 채워 넣은 값일 수 있어 2001년부터 쓴다.
+# 수입 맥주는 UN Comtrade 해마다 한 파일. 파일마다 세계 합계 줄(partnerCode 0)과 나라별 줄이 함께 있어
+# 세계 합계 줄 하나만 쓴다 (다 더하면 두 배가 된다)
+ALC_FROM, ALC_TO = 2001, 2020
+BEER_YEARS = range(2000, 2026)
+# 4번 보기 나라. 원본에는 나라 이름이 없고 번호(partnerCode)만 있다
+BEER_FROM = {392: "일본", 156: "중국", 528: "네덜란드", 842: "미국"}
+SOJU_ABV, SOJU_L = 0.165, 0.36          # 1번 소주 1병: 16.5% · 360mL (사용자가 정한 기준)
+
+
+def alcohol():
+    W = {int(r["date"]): r["value"] for r in load_json("wb_alcohol_kor.json")[1]
+         if r["indicator"]["id"] == "SH.ALC.PCAP.LI" and r["value"] is not None}
+    a0, a1 = W[ALC_FROM], W[ALC_TO]
+    drop = (a0 - a1) / a0 * 100
+    bottle = SOJU_L * SOJU_ABV                      # 소주 1병의 순수 알코올(L)
+    bottles = a1 / bottle / 12                      # 1번은 한 달 기준: 1년 값을 12로 나눈다
+    # 5번: 기간 안에서 1인당 소비량이 가장 낮은 해
+    low = sorted(range(ALC_FROM, ALC_TO + 1), key=lambda y: W[y])
+    assert W[low[0]] != W[low[1]], f"가장 낮은 해 동률: {low[:2]}"
+
+    beer = {}
+    for y in BEER_YEARS:
+        w = [r for r in load_json(f"comtrade_beer_{y}.json")["data"] if r["partnerCode"] == 0]
+        assert len(w) == 1, f"{y}: 세계 합계 줄이 하나가 아닙니다"
+        beer[y] = w[0]
+    by_usd = sorted(beer, key=lambda y: -beer[y]["primaryValue"])
+    by_kg = sorted(beer, key=lambda y: -beer[y]["netWgt"])
+    assert by_usd[0] == by_kg[0], f"맥주 1위가 금액({by_usd[0]})과 무게({by_kg[0]})로 다릅니다"
+    top = by_usd[0]
+    # 4번: 가장 최근 해의 나라별 줄(세계 합계 줄은 뺀다)을 금액으로 줄 세운다
+    last = BEER_YEARS[-1]
+    P = sorted((r for r in load_json(f"comtrade_beer_{last}.json")["data"] if r["partnerCode"] != 0),
+               key=lambda r: -r["primaryValue"])
+    assert P[0]["primaryValue"] != P[1]["primaryValue"], f"{last}년 맥주 1위 나라 동률"
+    assert all(r["partnerCode"] in BEER_FROM for r in P[:3]), "1~3위 나라 이름이 BEER_FROM 에 없습니다"
+    # 한계: 이웃한 두 해 값이 소수점까지 같으면 해마다 따로 잰 값이 아니라는 표시다
+    same = [(y, y + 1) for y in sorted(W) if y + 1 in W and W[y] == W[y + 1]]
+    span = f"{ALC_FROM}~{ALC_TO}년"
+    head = "WHO가 추정한 15세 이상 1인당 순수 알코올 소비량(세계은행)"
+
+    topic(
+        "alcohol", "🍶", "한국인의 술잔",
+        f"{span} 1인당 술 소비 · {BEER_YEARS[0]}~{BEER_YEARS[-1]}년 맥주 수입",
+        "World Health Organization (World Bank) · UN Comtrade",
+        "https://data.worldbank.org/indicator/SH.ALC.PCAP.LI?locations=KR",
+        [
+            slider("a1", f"{ALC_TO}년 한국인 1명이 한 달에 마신 술을 소주"
+                   f"({SOJU_ABV * 100:.1f}% · {SOJU_L * 1000:.0f}mL)로 치환하면 몇 병일까요?",
+                   bottles, "병", 0, 40, 1,
+                   f"{head} {ALC_TO}년 {a1:.2f}L를 12달로 나누고, 소주 1병({SOJU_L * 1000:.0f}mL · "
+                   f"{SOJU_ABV * 100:.1f}%)에 든 순수 알코올 {bottle * 1000:.1f}mL로 나누면 "
+                   f"한 달 {bottles:.1f}병입니다",
+                   "주변 술꾼을 떠올리면 많게, 술을 안 마시는 사람을 떠올리면 적게 잡습니다. "
+                   "15세 이상 모두를 평균한 값입니다."),
+            slider("a2", f"{ALC_FROM}년보다 {ALC_TO}년에 몇 % 줄었을까요?",
+                   drop, "%", 0, 60, 1,
+                   f"{head}은 {ALC_FROM}년 {a0:.2f}L → {ALC_TO}년 {a1:.2f}L로 "
+                   f"{drop:.1f}% 줄었습니다",
+                   "회식 문화가 줄었다는 이야기로 크게 줄었다고 짐작하거나, 술자리 기억으로 "
+                   "그대로라고 짐작하기 쉽습니다."),
+            choice("a3", "수입 맥주가 가장 많았던 해는?",
+                   ["2008년", "2014년", "2018년", "2024년"], f"{top}년",
+                   f"UN Comtrade의 대한민국 맥주(HS 2203) 수입 세계 합계를 {BEER_YEARS[0]}~"
+                   f"{BEER_YEARS[-1]}년 금액으로 줄 세우면 "
+                   + " · ".join(f"{y}년 {beer[y]['primaryValue'] / 1e6:,.0f}백만 달러"
+                                for y in by_usd[:3])
+                   + "이고, 무게로 세도 1위는 같습니다",
+                   "수입 맥주가 흔해진 요즘이 가장 많을 것 같지만, 정점은 그보다 앞섭니다."),
+            choice("a4", f"{last}년 맥주를 가장 많이 들여온 나라는?",
+                   list(BEER_FROM.values()), BEER_FROM[P[0]["partnerCode"]],
+                   f"UN Comtrade의 대한민국 맥주(HS 2203) {last}년 수입을 나라별 금액으로 줄 세우면 "
+                   + " · ".join(f"{BEER_FROM[r['partnerCode']]} {r['primaryValue'] / 1e6:,.1f}백만 달러"
+                                for r in P[:3]) + "입니다",
+                   "2019년 불매운동 기억으로 일본 맥주는 아직 적을 것이라 짐작하기 쉽습니다."),
+            choice("a5", f"{span} 중 1인당 음주량이 가장 적었던 해는?",
+                   ["2010년", "2015년", "2019년", "2020년"], f"{low[0]}년",
+                   f"{head}을 {span} 적은 순으로 줄 세우면 "
+                   + " · ".join(f"{y}년 {W[y]:.2f}L" for y in low[:3]) + "입니다",
+                   "술을 덜 마시는 요즘 분위기는 알아도, 어느 해가 가장 적었는지는 헷갈리기 쉽습니다."),
+        ],
+        caveat=f"술 소비량은 WHO 추정값({ALC_TO}년까지, "
+               + ", ".join(f"{a}·{b}년" for a, b in same) + " 값이 똑같음)이고, 소주 병 수는 모든 술의 "
+               f"알코올을 {SOJU_ABV * 100:.1f}% · {SOJU_L * 1000:.0f}mL 소주로 바꾼 값이며, 맥주 수입은 "
+               f"세관 신고 금액이라 {last}년 값은 바뀔 수 있습니다.")
+
+
+# ── 전기 ─────────────────────────────────────────────────────────
+# OWID 에너지 자료(나라별 · 해마다 1줄). 지역 합계 줄(World · Asia …)이 섞여 있어 South Korea 줄만 쓴다.
+# 전기 값은 1985년부터. 2025년은 Ember 만 다룬 잠정값일 수 있어 Energy Institute 도 다룬 2024년까지만 쓴다.
+# other_renewables 는 biofuel 과 같은 값이라 둘을 더하지 않는다 (재생 합계는 renewables 열을 쓴다)
+ELEC_FROM, ELEC_TO = 1985, 2024
+# 3번 보기 → 원본 열 이름
+ELEC_SRC = {"원자력": "nuclear", "석탄": "coal", "가스": "gas", "재생에너지": "renewables"}
+
+
+def electricity():
+    K = {int(r["year"]): r for r in load_csv("owid_energy.csv") if r["country"] == "South Korea"}
+    e = lambda y, c: float(K[y][c])
+    pc0, pc1 = e(ELEC_FROM, "per_capita_electricity"), e(ELEC_TO, "per_capita_electricity")
+    day = pc1 / 365
+    share = {k: e(ELEC_TO, f"{c}_share_elec") for k, c in ELEC_SRC.items()}
+    rank = sorted(share, key=lambda k: -share[k])
+    assert share[rank[0]] != share[rank[1]], f"3번 1위 동률: {rank[:2]}"
+    solar, wind = e(ELEC_TO, "solar_share_elec"), e(ELEC_TO, "wind_share_elec")
+    assert solar != wind, "5번 태양광 · 풍력 동률"
+    head = f"OWID 에너지 자료의 대한민국 {ELEC_TO}년"
+
+    topic(
+        "electricity", "⚡", "플러그 너머의 대한민국",
+        f"{ELEC_FROM}~{ELEC_TO}년 대한민국 전기",
+        "Our World in Data (Energy Institute · Ember)",
+        "https://ourworldindata.org/energy/country/south-korea",
+        [
+            slider("e1", f"{ELEC_TO}년 한국인 1명당 하루 전기 사용량은 몇 kWh일까요?",
+                   day, "kWh", 0, 60, 1,
+                   f"{head} 1인당 전기 {pc1:,.0f}kWh(1년, 나라 전체 발전량 ÷ 인구)를 365일로 나누면 "
+                   f"하루 {day:.1f}kWh입니다",
+                   "집 전기요금 고지서를 떠올리면 적게 잡습니다. 공장 · 회사 · 가게 전기까지 "
+                   "모두 나눈 값입니다."),
+            slider("e2", f"{ELEC_FROM}년보다 {ELEC_TO}년 한국인 1명당 전기 사용량은 몇 배 늘었을까요?",
+                   pc1 / pc0, "배", 1, 20, 0.5,
+                   f"OWID 에너지 자료의 대한민국 1인당 전기는 {ELEC_FROM}년 {pc0:,.0f}kWh(Energy Institute) → "
+                   f"{ELEC_TO}년 {pc1:,.0f}kWh(Ember)로 {pc1 / pc0:.1f}배입니다",
+                   "그때도 집마다 전기를 썼으니 두세 배쯤으로 짐작하기 쉽습니다."),
+            choice("e3", f"{ELEC_TO}년 우리나라 전기를 가장 많이 만든 것은?",
+                   list(ELEC_SRC), rank[0],
+                   f"{head} 발전 비중은 "
+                   + " · ".join(f"{k} {share[k]:.1f}%" for k in rank)
+                   + "입니다(재생에너지는 수력 · 태양광 · 풍력 · 바이오 합계)",
+                   "원자력 비중을 크게 떠올리기 쉽지만, 세 에너지가 거의 비슷하게 나눠 만듭니다."),
+            slider("e4", f"{ELEC_TO}년 태양광은 전기의 몇 %를 만들었을까요?",
+                   solar, "%", 0, 30, 0.5,
+                   f"{head} 발전 비중에서 태양광은 {solar:.1f}%입니다",
+                   "지붕과 들판의 태양광 패널이 눈에 많이 띄어 크게 잡기 쉽습니다."),
+            choice("e5", f"{ELEC_TO}년 태양광과 풍력 중 전기를 더 많이 만든 것은?",
+                   ["태양광", "풍력"], "태양광" if solar > wind else "풍력",
+                   f"{head} 발전 비중은 태양광 {solar:.1f}% · 풍력 {wind:.1f}%입니다",
+                   "바닷가 풍력 발전기가 커 보여도, 만드는 전기의 양은 다릅니다."),
+        ],
+        caveat="1인당 값은 공장 · 회사까지 포함한 나라 전체 발전량을 추정 인구로 나눈 것이라 가정 전기보다 "
+               f"훨씬 크고, {ELEC_FROM}년(Energy Institute)과 최근(Ember) 출처를 이어 붙였으며 "
+               f"{ELEC_TO + 1}년 잠정값은 뺐습니다.")
+
+
+# ── 우리 동네 눈 ─────────────────────────────────────────────────
+# Open-Meteo · ERA5. 시 · 도청 소재지 17곳(korea_snow.json)과 산지 · 섬 · 강원 영동 4곳
+# (korea_snow_extra.json). 응답은 fetch_all 의 SIDO · SNOW_EXTRA 좌표 순서대로 온다.
+# 겨울 = 7월 ~ 다음 해 6월. '눈 온 날'은 문항마다 기준이 다르다 (사용자가 정한 기준):
+#   1번은 하루 0.1cm 이상, 4번 첫눈은 기상청 첫눈처럼 쌓이지 않아도 되므로 0보다 크면
+SNOW_FROM, SNOW_TO = 1990, 2024
+SNOW_DAY_CM = 0.1
+GANGWON = ["강원(춘천)", "대관령", "강릉", "속초"]      # 5번에서 강원도로 세는 지점
+
+
+def korea_snow():
+    from fetch_all import SIDO, SNOW_EXTRA
+    S = {}
+    for pts, f in ((SIDO, "korea_snow.json"), (SNOW_EXTRA, "korea_snow_extra.json")):
+        D = load_json(f)
+        assert len(D) == len(pts), f"{f}: 지점 수가 좌표 목록과 다릅니다"
+        for (name, lat, lon), x in zip(pts, D):
+            assert abs(x["latitude"] - lat) < 0.25 and abs(x["longitude"] - lon) < 0.25, \
+                f"{name} 좌표 불일치"
+            S[name] = [(dt.date.fromisoformat(t), v or 0) for t, v in
+                       zip(x["daily"]["time"], x["daily"]["snowfall_sum"])]
+    n_years = SNOW_TO - SNOW_FROM + 1
+    span = f"{SNOW_FROM}~{SNOW_TO}년"
+    head = f"Open-Meteo ERA5의 {len(S)}개 지점({span})"
+
+    seoul_days = sum(1 for _, v in S["서울"] if v >= SNOW_DAY_CM) / n_years
+    busan = Counter()
+    for d, v in S["부산"]:
+        busan[d.year] += v
+    btop = busan.most_common()
+    assert btop[0][1] != btop[1][1], f"2번 1위 해 동률: {btop[:2]}"
+    yearly = {n: sum(v for _, v in S[n]) / n_years for n in S}
+    most = sorted(yearly, key=lambda n: -yearly[n])
+    assert yearly[most[0]] != yearly[most[1]], f"3번 1위 동률: {most[:2]}"
+
+    # 4번: 지점마다 겨울(7월~다음 해 6월)마다 첫눈 날을 찾아, 그 달을 모두 센다
+    months = Counter()
+    for n in S:
+        for w in range(SNOW_FROM, SNOW_TO):
+            first = next((d for d, v in S[n]
+                          if dt.date(w, 7, 1) <= d < dt.date(w + 1, 7, 1) and v > 0), None)
+            if first:
+                months[first.month] += 1
+    mtop = months.most_common()
+    assert mtop[0][1] != mtop[1][1], f"4번 1위 달 동률: {mtop[:2]}"
+
+    gw = sorted(GANGWON, key=lambda n: -yearly[n])
+    assert yearly[gw[0]] != yearly[gw[1]], f"5번 1위 동률: {gw[:2]}"
+    # 한계 문장의 예: 2011년 2월 동해안 폭설 때 강릉 값, 그리고 춘천이 서울보다 적게 나오는지
+    storm = sum(v for d, v in S["강릉"] if dt.date(2011, 2, 8) <= d <= dt.date(2011, 2, 15))
+    assert yearly["강원(춘천)"] < yearly["서울"], "춘천이 서울보다 적지 않습니다 — 한계 문장을 고치세요"
+
+    topic(
+        "korea-snow", "❄️", "우리 동네 눈 지도",
+        f"{span} 전국 17개 도시 강설 기록",
+        "Open-Meteo Archive (ERA5 재분석)",
+        "https://open-meteo.com/",
+        [
+            slider("s1", "서울에는 1년에 눈이 며칠 올까요?",
+                   seoul_days, "일", 0, 60, 1,
+                   f"{head} 중 서울에서 하루 강설량이 {SNOW_DAY_CM}cm 이상인 날을 세어 1년 평균하면 "
+                   f"{seoul_days:.1f}일입니다",
+                   "눈이 쌓였던 몇 번만 기억하면 적게 잡습니다. 조금 내린 눈도 하루로 셉니다."),
+            choice("s2", "부산에 눈이 가장 많이 온 해는?",
+                   ["2001년", "2005년", "2010년", "2023년"], f"{btop[0][0]}년",
+                   f"{head} 중 부산의 1년 강설량을 해마다 더하면 "
+                   + " · ".join(f"{y}년 {v:.2f}cm" for y, v in btop[:3]) + "입니다",
+                   "부산 눈은 드물어서, 뉴스로 기억에 남은 해를 고르기 쉽습니다."),
+            choice("s3", "1년 강설량이 가장 많은 지역은?",
+                   ["대관령", "울릉도", "충남(홍성)", "제주"], most[0],
+                   f"{head}에서 1년 강설량을 {span} 평균하면 "
+                   + " · ".join(f"{n} {yearly[n]:.1f}cm" for n in most[:3]) + "입니다",
+                   "산이 높은 강원도를 먼저 떠올리기 쉽지만, 바다 위 섬도 눈이 많습니다."),
+            choice("s4", "첫눈은 대개 몇 월에 올까요?",
+                   ["10월", "11월", "12월", "1월"], f"{mtop[0][0]}월",
+                   f"{head}에서 지점마다 겨울(7월~다음 해 6월)의 첫눈 날(쌓이지 않아도 눈이 "
+                   "조금이라도 내린 첫날)을 찾아 달별로 세면 "
+                   + " · ".join(f"{m}월 {c}번" for m, c in mtop[:3]) + "입니다",
+                   "첫눈 소식은 11월 뉴스로 많이 듣지만, 지역 전체로 보면 다른 달이 더 많습니다."),
+            choice("s5", f"강원도 {len(GANGWON)}곳 중 1년 강설량이 가장 많은 곳은?",
+                   GANGWON, gw[0],
+                   f"{head} 중 강원도 {len(GANGWON)}곳의 1년 강설량을 {span} 평균하면 "
+                   + " · ".join(f"{n} {yearly[n]:.1f}cm" for n in gw) + "입니다",
+                   "폭설 뉴스는 바닷가 도시에서 자주 나오지만, 1년 내내 더하면 높은 곳이 많습니다."),
+        ],
+        caveat="21곳의 약 25km 격자 ERA5 추정값이고 쌓인 눈이 아닌 하루 새로 내린 눈이라, 좁은 곳의 "
+               f"폭설이 작게 잡혀(예: 2011년 2월 8~15일 동해안 폭설 때 강릉 {storm:.1f}cm) 기상청 기록과 "
+               "양 · 순위가 다릅니다.")
+
+
+def write_only(t, replaces="", after=""):
+    """--only 로 한 주제만 만들 때 쓴다. 다른 주제 파일과 topics.json 의 나머지는 그대로 둔다.
+    replaces 를 주면 topics.json 에서 그 주제 카드 자리에 대신 들어간다 (그 주제 파일은 지우지 않는다).
+    after 를 주면 새 카드를 맨 뒤가 아니라 그 주제 카드 바로 뒤에 넣는다."""
+    assert len(t["questions"]) == 5, f"{t['id']}: 문항이 5개가 아닙니다"
+    pack = {k: t[k] for k in ("id", "emoji", "title", "blurb",
+                              "source", "source_url", "caveat")}
+    pack["questions"] = t["questions"]
+    io.open(OUT / f"{t['id']}.json", "w", encoding="utf-8").write(
+        json.dumps(pack, ensure_ascii=False, indent=2))
+    idx = json.load(io.open(APP / "topics.json", encoding="utf-8"))
+    entry = {k: t[k] for k in ("id", "emoji", "title", "blurb", "source")}
+    if t["fx"]:
+        entry["fx"] = t["fx"]
+    if t["art"]:
+        entry["art"] = t["art"]
+    # 이미 있으면 그 자리에서 바꾸고, 없으면 맨 뒤에 붙인다
+    if replaces:
+        idx["topics"] = [entry if x["id"] == replaces else x
+                         for x in idx["topics"] if x["id"] != t["id"]]
+    ids = [x["id"] for x in idx["topics"]]
+    if t["id"] in ids:
+        idx["topics"][ids.index(t["id"])] = entry
+    elif after in ids:
+        idx["topics"].insert(ids.index(after) + 1, entry)
+    else:
+        idx["topics"].append(entry)
+    io.open(APP / "topics.json", "w", encoding="utf-8").write(
+        json.dumps(idx, ensure_ascii=False, indent=2))
+    print(f"{t['emoji']} {t['title']}  ({t['source']})")
+    for q in t["questions"]:
+        print(f"    [{q['type'][:6]:<6}] {q['text'][:44]:<44} → {q['answer']}{q.get('unit', '')}")
+
+
+# python tools/build_topics.py --only metro-pop   (또는 quakes · typhoon · korea-heat · heritage · alcohol · electricity · korea-snow)
+# 다른 주제는 계산하지 않는다. 그 주제들의 원본이 data/raw/ 에 없어도 돈다
+if "--only" in sys.argv:
+    ONLY = {"metro-pop": metro_pop, "quakes": quakes, "typhoon": typhoon,
+            "korea-heat": korea_heat, "heritage": heritage, "alcohol": alcohol,
+            "electricity": electricity, "korea-snow": korea_snow}
+    # 새 주제가 첫 화면에서 대신 차지할 옛 주제 카드
+    REPLACES = {"korea-heat": "seoul-heat", "korea-snow": "seoul-snow"}
+    # 내가 만든 주제가 옛 주제보다 앞에 오도록, 새 카드를 넣을 자리 (이 카드 바로 뒤)
+    AFTER = {"heritage": "typhoon", "alcohol": "heritage", "electricity": "alcohol"}
+    tid = sys.argv[sys.argv.index("--only") + 1]
+    assert tid in ONLY, f"--only 는 {', '.join(ONLY)} 만 됩니다"
+    ONLY[tid]()
+    write_only(TOPICS[-1], REPLACES.get(tid, ""), AFTER.get(tid, ""))
+    sys.exit(0)
+
+
+# World Bank·OWID 응답에는 '유럽연합' '고소득국' 같은 **집계치**가 섞여 있다.
+# 그대로 순위를 매기면 나라와 대륙을 한 줄에 놓고 세는 셈이 된다.
+REAL = {x["id"] for x in load_json("wb_countries.json")[1]
+        if x["region"]["id"] != "NA"}
 
 
 # ════════════════════════════════════════════════════════════════
@@ -161,131 +862,6 @@ topic(
            f"({hottest['d']:%Y년})지만 기상청 서울 관측 기록은 2018년 39.6도입니다. "
            "같은 '서울 기온'도 출처에 따라 다릅니다.")
 
-# ── 2. 비 ────────────────────────────────────────────────────────
-rain_days = [sum(1 for x in W if x["d"].year == y and x["rain"] >= 1.0)
-             for y in range(1995, 2025)]
-rain_avg = mean(rain_days)
-by_month = {m: mean([sum(x["rain"] for x in W
-                         if x["d"].year == y and x["d"].month == m)
-                     for y in range(1995, 2025)]) for m in range(1, 13)}
-wettest_m = max(by_month, key=by_month.get)
-max_day = max(W, key=lambda x: x["rain"])
-ann = {y: sum(x["rain"] for x in W if x["d"].year == y) for y in range(1995, 2025)}
-norm = mean(ann.values())
-r2024 = ann[2024]
-
-
-def days_to_half(y):
-    v = sorted((x["rain"] for x in W if x["d"].year == y), reverse=True)
-    half, s = sum(v) / 2, 0
-    for i, r in enumerate(v, 1):
-        s += r
-        if s >= half:
-            return i
-    return len(v)
-
-
-half_days = round(mean(days_to_half(y) for y in range(1995, 2025)))
-
-topic(
-    "seoul-rain", "☔", "비는 언제, 얼마나",
-    "서울의 하루치 강수량 30년",
-    "Open-Meteo Archive (ERA5 재분석)", "https://open-meteo.com/",
-    [
-        slider("r1", "서울에서 1년 중 비가 온 날(1mm 이상)은 며칠쯤일까요?",
-               rain_avg, "일", 40, 160, 5,
-               f"1995~2024년 평균 {rain_avg:.1f}일 "
-               f"(최소 {min(rain_days)}일 · 최대 {max(rain_days)}일)",
-               "비 오는 날은 기억에 오래 남아서 실제보다 많게 느껴집니다."),
-        choice("r2", "1년 강수량이 가장 많은 달은?",
-               ["6월", "7월", "8월", "9월"], f"{wettest_m}월",
-               " · ".join(f"{m}월 {by_month[m]:.0f}mm" for m in (6, 7, 8, 9)),
-               "장마가 낀 달과 비가 가장 많이 오는 달이 같지 않을 수 있습니다."),
-        slider("r3", "하루에 내린 비의 최대 기록은?",
-               max_day["rain"], "mm", 100, 500, 10,
-               f"{max_day['d']:%Y년 %m월 %d일} {max_day['rain']:.1f}mm",
-               f"가장 많이 온 날 하루에, 비가 가장 많은 {wettest_m}월 한 달 평균"
-               f"({by_month[wettest_m]:.0f}mm)의 {max_day['rain'] / by_month[wettest_m] * 100:.0f}%가 "
-               "쏟아졌습니다. 비는 고르게 오지 않습니다."),
-        slider("r4", "1년 강수량의 절반은 '비 온 날' 며칠 만에 채워질까요?",
-               half_days, "일", 3, 40, 1,
-               f"많이 온 날부터 더해서 연 강수량의 절반에 도달하는 데 "
-               f"평균 {half_days}일 (1995~2024년)",
-               "비는 고르게 오지 않습니다. 열흘 남짓이 1년의 절반을 만듭니다."),
-        slider("r5", "2024년 서울 강수량은 30년 평균의 몇 %였을까요?",
-               r2024 / norm * 100, "%", 50, 180, 5,
-               f"2024년 {r2024:.0f}mm · 1995~2024년 평균 {norm:.0f}mm",
-               "'올해 비가 많았다'는 체감과 실제 총량은 자주 어긋납니다."),
-    ],
-    caveat="ERA5 재분석 값입니다. 기상청 관측 강수량과 조금씩 다릅니다.")
-
-# ── 3. 미세먼지 ──────────────────────────────────────────────────
-a = load_json("seoul_air.json")["hourly"]
-A = [{"t": dt.datetime.fromisoformat(t), "pm25": p25, "pm10": p10}
-     for t, p25, p10 in zip(a["time"], a["pm2_5"], a["pm10"])]
-A24 = [x for x in A if x["t"].year == 2024]
-pm_month = {m: mean([x["pm25"] for x in A if x["t"].month == m])
-            for m in range(1, 13)}
-worst_m = max(pm_month, key=pm_month.get)
-pm_hour = {h: mean([x["pm25"] for x in A if x["t"].hour == h])
-           for h in range(24)}
-worst_h = max(pm_hour, key=pm_hour.get)
-pm24_avg = mean(x["pm25"] for x in A24)
-
-
-def daily_avg(year):
-    d = {}
-    for x in A:
-        if x["t"].year == year:
-            d.setdefault(x["t"].date(), []).append(x["pm25"])
-    return {k: mean(v) for k, v in d.items()}
-
-
-d24 = daily_avg(2024)
-d23 = daily_avg(2023)
-bad_ratio = sum(1 for v in d24.values() if v > 35) / len(d24) * 100
-worse_year = "2023년" if mean(d23.values()) > mean(d24.values()) else "2024년"
-
-topic(
-    "seoul-air", "😷", "미세먼지, 언제 나쁜가",
-    "서울의 시간별 초미세먼지 2년치",
-    "Open-Meteo Air Quality (CAMS)", "https://open-meteo.com/",
-    [
-        choice("a1", "초미세먼지(PM2.5)가 가장 나쁜 달은?",
-               ["1월", "3월", "5월", "11월"],
-               f"{worst_m}월" if f"{worst_m}월" in ["1월", "3월", "5월", "11월"]
-               else "3월",
-               " · ".join(f"{m}월 {pm_month[m]:.1f}" for m in (1, 3, 5, 11))
-               + f" (최악은 {worst_m}월 {pm_month[worst_m]:.1f})",
-               "황사 뉴스가 많은 달과 실제 수치가 높은 달은 다를 수 있습니다."),
-        slider("a2", "2024년 서울의 초미세먼지 연평균 농도는?",
-               pm24_avg, "㎍/㎥", 5, 60, 1,
-               f"2024년 시간값 {len(A24):,}개의 평균 {pm24_avg:.1f}㎍/㎥ "
-               f"(WHO 권고 연평균 5, 국내 기준 15)",
-               "'나쁨'인 날이 인상에 남아서 연평균을 높게 잡게 됩니다."),
-        choice("a3", "하루 중 초미세먼지가 가장 높은 시간대는?",
-               ["새벽 4시", "오전 10시", "오후 3시", "밤 9시"],
-               {4: "새벽 4시", 10: "오전 10시", 15: "오후 3시",
-                21: "밤 9시"}.get(worst_h, "오전 10시"),
-               " · ".join(f"{h}시 {pm_hour[h]:.1f}" for h in (4, 10, 15, 21))
-               + f" (최고는 {worst_h}시)",
-               "출퇴근 시간이 가장 나쁠 것 같지만 대기가 정체되는 시간은 따로 "
-               "있습니다."),
-        slider("a4", "2024년 하루 평균이 '나쁨'(35㎍/㎥ 초과)이었던 날의 비율은?",
-               bad_ratio, "%", 0, 60, 1,
-               f"2024년 {len(d24)}일 중 "
-               f"{sum(1 for v in d24.values() if v > 35)}일",
-               "마스크를 챙긴 날은 강하게 기억되지만, 1년 전체로 보면 비율이 "
-               "다릅니다."),
-        choice("a5", "2023년과 2024년 중 초미세먼지가 더 나빴던 해는?",
-               ["2023년", "2024년"], worse_year,
-               f"연평균 2023년 {mean(d23.values()):.1f} · "
-               f"2024년 {mean(d24.values()):.1f}㎍/㎥",
-               "체감은 최근 쪽으로 쏠립니다. 두 해 차이는 생각보다 작습니다."),
-    ],
-    caveat="CAMS 대기질 모델의 추정값입니다. 에어코리아 측정소 실측값과 "
-           "다를 수 있습니다.")
-
 # ── 4. 노동시간 ──────────────────────────────────────────────────
 wh = [r for r in load_csv("working_hours.csv") if r["working_hours_omm"]]
 latest_year = max(int(r["year"]) for r in wh if r["code"] == "KOR")
@@ -334,58 +910,6 @@ topic(
     ],
     caveat="이 자료에는 개발도상국이 많이 포함돼 있어, OECD 안에서의 순위와 "
            "전체 순위가 다릅니다. '어느 집단과 비교하느냐'가 순위를 만듭니다.")
-
-# ── 5. 인구와 출산 ───────────────────────────────────────────────
-fert = [r for r in load_json("wb_fertility.json")[1] if r["value"] is not None]
-f_latest = max(int(r["date"]) for r in fert if r["countryiso3code"] == "KOR")
-f_cur = wb_countries(fert, f_latest)
-kor_f = f_cur["Korea, Rep."]
-f_rank = sorted(f_cur.items(), key=lambda kv: kv[1])
-kor_f_rank = [k for k, _ in f_rank].index("Korea, Rep.") + 1
-kor_1970 = next(r["value"] for r in fert
-                if r["countryiso3code"] == "KOR" and r["date"] == "1970")
-
-pop = load_json("wb_pop_kor.json")[1]
-tot = {int(r["date"]): r["value"] for r in pop
-       if r["indicator"]["id"] == "SP.POP.TOTL" and r["value"]}
-old = {int(r["date"]): r["value"] for r in pop
-       if r["indicator"]["id"] == "SP.POP.65UP.TO.ZS" and r["value"]}
-urb = {int(r["date"]): r["value"] for r in pop
-       if r["indicator"]["id"] == "SP.URB.TOTL.IN.ZS" and r["value"]}
-peak_year = max(tot, key=tot.get)
-old_latest = max(old)
-urb_latest = max(urb)
-
-topic(
-    "population", "👶", "인구와 출산",
-    "전 세계 출산율과 한국의 인구 구조",
-    "World Bank Open Data", "https://data.worldbank.org/",
-    [
-        slider("p1", f"{f_latest}년 한국의 합계출산율(여성 1명당 출생아 수)은?",
-               kor_f, "명", 0.5, 3.0, 0.05,
-               f"{f_latest}년 한국 {kor_f:.2f}명",
-               "숫자는 자주 들었어도 '여성 1명당'이라는 단위는 잘 안 와닿습니다."),
-        slider("p2", f"출산율이 낮은 순으로 세면 한국은 {len(f_cur)}개 나라·지역 중 몇 위일까요?",
-               kor_f_rank, "위", 1, 30, 1,
-               f"{f_latest}년 기준 {len(f_cur)}곳 중 {kor_f_rank}위 "
-               f"(1위 {f_rank[0][0]} {f_rank[0][1]:.2f})",
-               "'꼴찌'라고 알고 있지만, 비교 목록에 어떤 나라·지역이 들어가느냐에 "
-               "따라 순위가 달라집니다."),
-        slider("p3", "1970년 한국의 출산율은 몇 명이었을까요?",
-               kor_1970, "명", 1.0, 7.0, 0.1,
-               f"1970년 {kor_1970:.2f}명 → {f_latest}년 {kor_f:.2f}명",
-               "한 세대 만에 일어난 변화의 크기는 대개 과소평가됩니다."),
-        slider("p4", f"{old_latest}년 한국에서 65세 이상 인구의 비율은?",
-               old[old_latest], "%", 5, 35, 1,
-               f"{old_latest}년 {old[old_latest]:.1f}% "
-               f"(World Bank 최신 공표치. 최근 연도는 추계값입니다)",
-               "고령화는 '다가올 일'로 느껴지지만 이미 지나온 숫자입니다."),
-        slider("p5", f"{urb_latest}년 한국에서 도시에 사는 사람의 비율은?",
-               urb[urb_latest], "%", 50, 100, 1,
-               f"{urb_latest}년 {urb[urb_latest]:.1f}% "
-               f"(World Bank 최신 공표치. 최근 연도는 추계값입니다)",
-               "'절반쯤'이라고 답하기 쉽지만 한국은 세계에서도 손꼽히는 도시 국가입니다."),
-    ])
 
 # ── 6. 인터넷 ────────────────────────────────────────────────────
 net = [r for r in load_json("wb_internet.json")[1] if r["value"] is not None]
@@ -474,114 +998,8 @@ topic(
                "가장 최근 값조차 기억은 며칠 전 뉴스에 묶여 있습니다."),
     ])
 
-# ── 8. 도시 비교 ─────────────────────────────────────────────────
-CITY = {}
-for cid in ("seoul", "tokyo", "london", "singapore"):
-    _d = load_json(f"city_{cid}.json")["daily"]
-    CITY[cid] = [{"d": dt.date.fromisoformat(t), "hi": a, "lo": b, "r": c}
-                 for t, a, b, c in zip(_d["time"], _d["temperature_2m_max"],
-                                       _d["temperature_2m_min"],
-                                       _d["precipitation_sum"])]
-CN = {"seoul": "서울", "tokyo": "도쿄", "london": "런던", "singapore": "싱가포르"}
-YRS = 30
-c_rain = {k: sum(x["r"] for x in v) / YRS for k, v in CITY.items()}
-c_days = {k: sum(1 for x in v if x["r"] >= 1) / YRS for k, v in CITY.items()}
-c_temp = {k: mean((x["hi"] + x["lo"]) / 2 for x in v) for k, v in CITY.items()}
-c_hot = {k: max(x["hi"] for x in v) for k, v in CITY.items()}
-c_jan = {k: mean(x["lo"] for x in v if x["d"].month == 1) for k, v in CITY.items()}
-dry = min(c_rain, key=c_rain.get)
-hottest = max(c_hot, key=c_hot.get)
-colder = "서울" if c_jan["seoul"] < c_jan["tokyo"] else "도쿄"
-
-topic(
-    "cities", "🏙️", "서울·도쿄·런던·싱가포르",
-    "네 도시의 30년 평년값 (1991~2020)",
-    "Open-Meteo Archive (ERA5 재분석)", "https://open-meteo.com/",
-    [
-        choice("c1", "1년 강수량이 가장 적은 도시는?",
-               ["서울", "도쿄", "런던", "싱가포르"], CN[dry],
-               " · ".join(f"{CN[k]} {c_rain[k]:,.0f}mm" for k in CITY),
-               "비가 자주 오는 것과 많이 오는 것은 다릅니다. 런던은 자주 오지만 "
-               "적게 옵니다."),
-        slider("c2", "런던에서 1년에 비가 오는 날(1mm 이상)은 며칠일까요?",
-               c_days["london"], "일", 40, 220, 5,
-               f"런던 {c_days['london']:.0f}일 · 서울 {c_days['seoul']:.0f}일 "
-               f"(강수량은 런던 {c_rain['london']:,.0f}mm · "
-               f"서울 {c_rain['seoul']:,.0f}mm)",
-               "런던은 서울보다 비 오는 날이 많은데 총량은 절반입니다. "
-               "'며칠 왔나'와 '얼마나 왔나'는 다른 질문입니다."),
-        choice("c3", "30년간 가장 높은 기온을 기록한 도시는?",
-               ["서울", "도쿄", "런던", "싱가포르"], CN[hottest],
-               " · ".join(f"{CN[k]} {c_hot[k]:.1f}도" for k in CITY),
-               "적도에 가까울수록 덥다고 생각하지만, 최고기온 기록은 중위도 "
-               "도시에서 나옵니다."),
-        slider("c4", "서울의 연평균 기온은?",
-               c_temp["seoul"], "도", 5, 30, 0.5,
-               " · ".join(f"{CN[k]} {c_temp[k]:.1f}도" for k in CITY),
-               "여름과 겨울의 기억이 강해서 연평균은 감이 잘 안 옵니다."),
-        choice("c5", "1월 밤이 더 추운 도시는?",
-               ["서울", "도쿄"], colder,
-               f"1월 평균 최저기온 서울 {c_jan['seoul']:.1f}도 · "
-               f"도쿄 {c_jan['tokyo']:.1f}도",
-               "위도가 비슷해도 대륙의 영향을 받는 도시가 훨씬 춥습니다."),
-    ],
-    caveat="ERA5 재분석 값이고, 도시별로 관측소 위치와 기준이 다릅니다.")
-
 # ── 9. 지진 ──────────────────────────────────────────────────────
-Q = [f["properties"] for f in load_json("quakes.geojson")["features"]]
-QK = [f["properties"] for f in load_json("quakes_korea.geojson")["features"]]
-n_years = 25
-per_year = len(Q) / n_years
-m7 = sum(1 for p in Q if p["mag"] >= 7.0) / n_years
-biggest = max(Q, key=lambda p: p["mag"])
-
-
-def region(place):
-    return (place or "").split(",")[-1].strip()
-
-
-top_region = Counter(region(p["place"]) for p in Q).most_common(1)[0]
-region_ko = {"Japan": "일본", "Indonesia": "인도네시아", "Chile": "칠레",
-             "Philippines": "필리핀"}
-kr_band = ("50건 미만" if len(QK) < 50 else "50~150건" if len(QK) <= 150
-           else "150~400건" if len(QK) <= 400 else "400건 이상")
-
-topic(
-    "quakes", "🌎", "지진은 얼마나 자주",
-    "2000~2024년 전 세계 지진 기록",
-    "USGS 지진 카탈로그", "https://earthquake.usgs.gov/",
-    [
-        slider("q1", "규모 5.5 이상 지진은 전 세계에서 1년에 몇 번쯤 일어날까요?",
-               per_year, "회", 50, 1200, 50,
-               f"2000~2024년 {len(Q):,}건 ÷ {n_years}년 = "
-               f"연평균 {per_year:.0f}회",
-               "뉴스에 나오는 지진만 세면 실제보다 훨씬 적게 잡게 됩니다."),
-        slider("q2", "규모 7.0 이상은 1년에 몇 번쯤일까요?",
-               m7, "회", 0, 40, 1,
-               f"2000~2024년 규모 7.0 이상 "
-               f"{sum(1 for p in Q if p['mag'] >= 7.0)}건, 연평균 {m7:.1f}회",
-               "규모는 로그 척도입니다. 0.5만 올라가도 횟수가 크게 줄어듭니다."),
-        choice("q3", "규모 5.5 이상 지진이 가장 자주 기록된 나라는?",
-               ["일본", "인도네시아", "칠레", "필리핀"],
-               region_ko.get(top_region[0], "인도네시아"),
-               f"1위 {top_region[0]} {top_region[1]:,}건",
-               "지진 하면 떠오르는 나라와 실제로 가장 많이 기록되는 곳은 "
-               "다를 수 있습니다."),
-        slider("q4", "2000년 이후 기록된 가장 큰 지진의 규모는?",
-               biggest["mag"], "", 7.0, 9.9, 0.1,
-               f"규모 {biggest['mag']} · "
-               f"{dt.datetime.fromtimestamp(biggest['time'] / 1000, dt.UTC):%Y-%m-%d} "
-               f"{biggest['place']}",
-               "규모 9는 8보다 약 32배 큰 에너지입니다."),
-        choice("q5", "한반도 주변(위도 33~39.5도)에서 25년간 기록된 규모 3.0 이상 지진은?",
-               ["50건 미만", "50~150건", "150~400건", "400건 이상"], kr_band,
-               f"USGS 기준 {len(QK)}건. 이 관측망은 작은 지진을 모두 잡지는 "
-               f"못하므로 기상청 집계와 다릅니다",
-               "'어느 기관이 센 숫자인가'를 확인하지 않으면 같은 현상도 다른 "
-               "값이 됩니다."),
-    ],
-    caveat="USGS 카탈로그는 작은 지진을 모두 담지 못합니다. 한반도 지진은 "
-           "기상청 집계가 더 많습니다.")
+quakes()
 
 # ── 10. 수명 ─────────────────────────────────────────────────────
 le = [r for r in load_csv("life_expectancy.csv") if r["life_expectancy_0"]]
@@ -713,6 +1131,10 @@ topic(
            "세느냐 1cm 이상으로 세느냐에 따라 눈 온 날수와 첫눈 달이 크게 달라지므로 "
            "기상청 발표와 다를 수 있습니다.")
 
+metro_pop()
+typhoon()
+korea_heat()
+
 
 # ════════════════════════════════════════════════════════════════
 def main() -> None:
@@ -726,7 +1148,8 @@ def main() -> None:
         io.open(OUT / f"{t['id']}.json", "w", encoding="utf-8").write(
             json.dumps(pack, ensure_ascii=False, indent=2))
         index.append({k: t[k] for k in ("id", "emoji", "title", "blurb",
-                                        "source")})
+                                        "source")} | ({"fx": t["fx"]} if t["fx"] else {})
+                     | ({"art": t["art"]} if t["art"] else {}))
 
     # 제목·부제는 화면을 바꾸며 고친 값을 지킨다 (2장에서 내 제목으로 바꾼다).
     # 다시 계산해도 내 제목이 «감 테스트»로 돌아가지 않게, 있던 값을 읽어 쓴다
